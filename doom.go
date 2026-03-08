@@ -65,6 +65,19 @@ type DoomFrontend interface {
 	PlaySound(name string, channel, volume, sep int)
 }
 
+// DoomMusicFrontend is an optional interface that frontends can implement
+// to support background music playback. The gore engine converts MUS data
+// from the WAD to Standard MIDI before calling RegisterSong.
+type DoomMusicFrontend interface {
+	RegisterSong(midiData []byte) int64
+	UnRegisterSong(handle int64)
+	PlaySong(handle int64, looping bool)
+	StopSong()
+	SetMusicVolume(volume int32)
+	PauseSong()
+	ResumeSong()
+}
+
 var dg_frontend DoomFrontend
 var dg_run_full_speed bool = false // If true, don't ever sleep, and just tick up once-per-frame
 var dg_fake_tics uint64
@@ -17346,6 +17359,41 @@ func initSfxModule(use_sfx_prefix boolean) {
 // Initialize music according to snd_musicdevice.
 
 func initMusicModule() {
+	mf, ok := dg_frontend.(DoomMusicFrontend)
+	if !ok {
+		return
+	}
+	music_module = &music_module_t{
+		FInit:     func() {},
+		FShutdown: func() {},
+		FSetMusicVolume: func(volume int32) {
+			mf.SetMusicVolume(volume)
+		},
+		FPauseMusic: func() {
+			mf.PauseSong()
+		},
+		FResumeMusic: func() {
+			mf.ResumeSong()
+		},
+		FRegisterSong: func(data []byte) uintptr {
+			midiData, err := MusToMidi(data)
+			if err != nil {
+				log.Printf("gore: MUS to MIDI conversion failed: %v", err)
+				return 0
+			}
+			return uintptr(mf.RegisterSong(midiData))
+		},
+		FUnRegisterSong: func(handle uintptr) {
+			mf.UnRegisterSong(int64(handle))
+		},
+		FPlaySong: func(handle uintptr, looping boolean) boolean {
+			mf.PlaySong(int64(handle), looping != 0)
+			return 1
+		},
+		FStopSong: func() {
+			mf.StopSong()
+		},
+	}
 }
 
 //
@@ -17507,7 +17555,7 @@ func i_ResumeSong() {
 
 func i_RegisterSong(data []byte) uintptr {
 	if music_module != nil {
-		music_module.FRegisterSong(data)
+		return music_module.FRegisterSong(data)
 	}
 	return 0
 }
